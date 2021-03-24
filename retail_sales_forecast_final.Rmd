@@ -1,0 +1,704 @@
+---
+title: "Retail sales forecast"
+author: "Andreea Alexandrescu"
+date: "May 31, 2019"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+  
+  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+options(scipen=999)
+setwd("C:/Users/andreea.madalina/Desktop/retail-data-analytics")
+
+library(readr)
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(forecast)
+library(GGally)
+library(tseries)
+```
+
+## Data engineering
+
+### Read data
+
+```{r readdata}
+
+Features <- read_csv("Features data set.csv", 
+    col_types = cols(Date = col_date(format = "%d/%m/%Y")))
+
+sales <- read_csv("sales data-set.csv", 
+    col_types = cols(Date = col_date(format = "%d/%m/%Y")))
+
+stores <- read_csv("stores data-set.csv", 
+    col_types = cols(Type = col_factor(levels = c("A", 
+        "B", "C"))))
+
+```
+
+### Summarize data
+
+```{r explore, echo = FALSE}
+print("Features summary:")
+summary(Features)
+print("Sales summary:")
+summary(sales)
+print("Stores summary:")
+summary(stores)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+
+### Missing data imputation
+
+```{r missdata}
+
+for(i in c("MarkDown1", "MarkDown2", "MarkDown3", "MarkDown4", "MarkDown5", "CPI", "Unemployment")){
+  Features[which(is.na(Features[,i])),i] <- 0
+}
+#summary(Features)
+
+```
+
+### Data cleaning
+
+Not necessary for our data. 
+
+### Bring data all together  
+
+```{r alldata}
+alldata <- left_join(sales, Features)
+alldata <- left_join(alldata, stores)
+#head(alldata)
+
+```
+
+
+
+## Data visualization  
+
+### First look of the time series to be forecasted
+
+```{r plots}
+
+#for (i in 1:45) {
+  i = 1
+  store <- filter(alldata, alldata$Store == i)
+  store_sales <- store %>%
+                 group_by(Date) %>%
+                 summarise(total_store_sales = sum(Weekly_Sales, na.rm = TRUE)) %>%
+                 arrange(Date)
+  
+ theme_set(theme_classic())
+
+ ggplot(store_sales, aes(x = Date, y = total_store_sales)) + 
+  geom_line(colour = "blue") + 
+    labs(y = "Total store sales",
+         x = "Date",
+         title = paste0("Sales over time for store ", i)
+         )
+
+ 
+ 
+ # Take a logarithm of a series to help stabilize a strong growth trend
+ # store_sales$log_sales <- log(store_sales$total_store_sales)
+ # 
+ # ggplot(store_sales, aes(x = Date, y = log_sales)) + 
+ #  geom_line(colour = "blue") + 
+ #    labs(y = "Log sales",
+ #         x = "Date",
+ #         title = paste0("Log Sales over time for store ", i)
+ #         )
+ 
+ 
+ ggplot(store_sales, aes(total_store_sales)) +
+  geom_histogram(bins = 100, col = "blue") +
+  labs(title = paste0("Distribution of total sales for store ", i))
+
+# } 
+
+```
+
+
+### Holidays
+
+Are holidays influencing sales ?
+
+```{r plotsHoli}
+
+  i = 1
+  store <- filter(alldata, alldata$Store == i)
+  store_sales <- store %>%
+                 group_by(IsHoliday, Date) %>%
+                 summarise(total_store_sales = sum(Weekly_Sales, na.rm = TRUE)) %>%
+                 arrange(Date)
+  
+ #theme_set(theme_classic())
+
+ ggplot(store_sales, aes(x = Date, y = total_store_sales)) + 
+  geom_line(aes(col = IsHoliday)) + 
+    labs(y = "Total store sales",
+         x = "Date",
+         title = paste0("Sales over time by Holiday for store ", i)
+         )
+
+ ggplot(store_sales, aes(total_store_sales)) +
+  geom_histogram(aes(fill = IsHoliday), bins = 100) +
+  labs(title = paste0("Distribution of total sales for store ", i))
+
+```
+
+
+Sales during holidays seem to have the same trend as the usual sales.  
+
+
+
+
+
+```{r tsclening, echo = FALSE, include = FALSE}
+
+### Data cleaning 
+
+store_sales$clean_total_sales <- tsclean(store_sales$total_store_sales)
+
+ggplot(store_sales, aes(x = clean_total_sales, y = total_store_sales)) + 
+  geom_point(colour = "blue") + 
+    labs(y = "Total store sales",
+         x = "Clean total score sales",
+         title = paste0("Check cleaned data for store ", i)
+         )
+
+# store_sales$clean_log_sales <- tsclean(store_sales$log_sales)
+# 
+# ggplot(store_sales, aes(x = clean_log_sales, y = log_sales)) + 
+#   geom_point(colour = "blue") + 
+#     labs(y = "Log Total store sales",
+#          x = "Clean log total score sales",
+#          title = paste0("Check log cleaned data for store ", i)
+#          )
+
+```
+
+
+
+
+### Decompose data 
+
+Decomposition is often used to remove the seasonal effect from a time series and it provides a clearer way to understand trends.
+
+```{r trends}
+
+  i=1
+  store <- filter(alldata, alldata$Store == i)
+  store_sales <- store %>%
+                 group_by(IsHoliday, Date) %>%
+                 summarise(total_store_sales = sum(Weekly_Sales, na.rm = TRUE)) %>%
+                 arrange(Date)
+
+  ts <- ts(store_sales[,c("total_store_sales")], frequency = 52)
+  decomposed.ts <- decompose(ts, type = "additive")
+  plot(decomposed.ts)
+  
+  autoplot(decomposed.ts$seasonal, colour = "blue") +
+    ggtitle(paste0("Seasonal decomposition for store ", i))
+
+  autoplot(decomposed.ts$trend, colour = "blue") +
+    ggtitle(paste0("Trend decomposition for store ", i))
+  
+  #Seasonally Adjusted = Time series - Seasonal
+  ts.min.sea <- ts - decomposed.ts$seasonal 
+  autoplot(ts.min.sea, colour = "blue") + 
+    ggtitle(paste0("Seasonally Adjusted Sales for store ", i)) +
+    ylab("Sales")
+  
+  
+```
+
+
+#### Trend
+
+A trend exists when there is a long-term increase or decrease in the data. From the figure above, we can observe an increasing trend in the total sales of store 1 from one year to another.
+
+
+#### Seasonality
+
+A seasonal pattern occurs when a time series is affected by seasonal factors such as the time of the year or the day of the week. Seasonality is always of a fixed and known frequency (since we have weekly data, we set frequency to 52). 
+
+Note that week 1 is not the first week of the year 2010, but the first week of the recorded observations. 
+
+```{r seasonplot}
+
+ggseasonplot(ts, year.labels=TRUE, year.labels.left=TRUE) +
+  ylab("Sales") +
+  ggtitle(paste0("Seasonal plots of sales for store ", i))
+
+ggseasonplot(ts, polar = TRUE) +
+  ylab("Sales") +
+  ggtitle(paste0("Seasonal plots of sales for store ", i))
+
+```
+
+
+
+
+### Scatterplots
+
+Sometimes it is useful to explore relationships between time series, especially if we want to use an explanatory model for forecasting. 
+
+```{r scatterplot}
+
+i <- 1
+store_feat <- filter(Features, Store == i)
+#summary(store_feat)
+
+store_tot <- left_join(store_sales, store_feat)
+
+autoplot(ts(store_tot[,c("total_store_sales","Temperature", "Fuel_Price", "CPI", "Unemployment")]), facets=TRUE) +
+  xlab("") + ylab("") +
+  ggtitle("Sales versus other features")
+
+```
+
+
+
+
+
+### Correlations
+
+```{r corr}
+
+ggpairs(store_tot[,c("total_store_sales","Temperature", "Fuel_Price", "CPI", "Unemployment")])
+
+```
+
+From the above figure, we observe : a strog negative correlation (-0.813) between Unemployment & CPI (which is quite obvious -> when the unemployment increases, the CPI will decrease); a positive correlation between CPI & Fuel Price (0.755); non relevant correlations between Sales and the other variables. 
+
+
+
+
+### Stationarity
+
+Is the series stationary ? (since we've seen above trend and seasonality, the series it definitely not stationary, but we expose here some theory)
+
+```{r stationary}
+
+adf.test(ts)
+
+```
+Use adf.test(), ACF, PACF plots to determine order of differencing needed
+
+
+#### ACF and PACF plots
+
+
+It is usually not possible to tell, simply from a time plot, what values of p and q (parameters of ARIMA) are apprrpriate for the data. However, it is sometimes possible to use the ACF plot, and the closely related PACF plot, to determine the apropriate values.
+
+```{r acf}
+ggAcf(ts, main = " ")
+ggPacf(ts, main = " ")
+
+```
+
+The data may follow an ARIMA(p ,d ,0) model if the ACF and PACF plots of the differenced data show the following patterns:
+- the ACF is exponentially decaying or sinusoidal;
+- there is a significant spike at lag p in the PACF, but none beyond lag p
+ 
+The data may follow an ARIMA(0, d, q) model if the ACF and PACF plots of the differenced data show the following patterns:
+- the PACF is exponentially decaying or sinusoidal;
+- there is a significant spike at lag q in the ACF, but none beyond lag q
+
+
+
+
+
+## Forecasting models
+
+Time series models used for forecasting include : decomposition models, regression models, exponential smoothing methods, Box-Jenkins ARIMA models, Dynamic regression models, Hierarchical forecasting, neural networks, vector autoregression. 
+
+When we obtain a forecast, we are estimating the middle of the range of possible values the random variable could take. Often, a forecast is accompanied by a prediction interval giving a range of values the random variable could take with relatively high probability. For example, a 95% prediction interval contains a range of values which should include the actual future value with probability 95%.
+
+
+### Some simple models
+
+####Average method
+Here, the forecasts of all future values are equal to the average of the historical data.
+
+#### Naïve method
+For naïve forecasts, we simply set all forecasts to be the value of the last observation.
+
+#### Seasonal naïve method
+A similar method is useful for highly seasonal data. In this case, we set each forecast to be equal to the last observed value from the same season of the year. 
+
+#### Drift method
+
+A variation on the naïve method is to allow the forecasts to increase or decrease over time, where the amount of change over time (called the drift) is set to be the average change seen in the historical data. 
+This is equivalent to drawing a line between the first and last observations, and extrapolating it into the future.
+
+
+```{r naivemodels}
+
+autoplot(ts) +
+  autolayer(meanf(ts, h=8),
+    series="Mean", PI=FALSE) +
+  autolayer(naive(ts, h=8),
+    series="Naïve", PI=FALSE) +
+  autolayer(snaive(ts, h=8),
+    series="Seasonal naïve", PI=FALSE) +
+  autolayer(rwf(ts, drift = TRUE,h=8),
+    series="Drift method", PI=FALSE) +
+  ggtitle(paste0("Forecasts for total sales of store ", i )) +
+  xlab("Time") + ylab("Sales") +
+  guides(colour=guide_legend(title="Forecast"))
+
+```
+
+
+
+
+#### Evaluating forecast accuracy
+
+##### Training and test sets
+
+Split data into train & test and choose the model with the smallest error (RMSE for example) on the TEST set. 
+
+
+```{r train}
+
+#split data into train(80%) and test (20%)
+
+n <- round(length(ts)*0.8)
+h <- length(ts) - n # forecast horizon
+
+train.ts <- ts[1:n]
+test.ts <- ts[(n+1):length(ts)]
+
+# Mean Forecast
+fit1 <- meanf(train.ts, h = h)
+
+# random walk forecast
+# ARIMA(0,1,0) model with an optional drift coefficient
+fit2 <- rwf(train.ts, h = h, drift = FALSE)
+#drift model
+fit22 <- rwf(train.ts, h = h, drift = TRUE)
+
+# Seasonal naïve method
+# ARIMA(0,0,0)(0,1,0)m model where m is the seasonal period
+fit3 <- snaive(train.ts, h = h) 
+
+# Forecast error
+accuracy(fit1, test.ts)
+accuracy(fit2, test.ts)
+accuracy(fit22, test.ts)
+accuracy(fit3, test.ts)
+
+
+```
+
+
+##### Time series cross-validation 
+
+A more sophisticated version of training/test sets is time series cross-validation. In this procedure, there are a series of test sets, each consisting of a single observation. 
+In the following example, we compare the RMSE obtained via time series cross-validation with the residual RMSE. We expect to obtain a RMSE from the residuals smaller, as the corresponding "forecasts" are based on a model fitted to the entire data set, rather than being true forecasts.
+
+
+```{r tscv}
+e <- tsCV(ts, rwf, drift=TRUE, h=1)
+sqrt(mean(e^2, na.rm=TRUE))
+
+sqrt(mean(residuals(rwf(ts, drift=TRUE))^2, na.rm=TRUE))
+
+```
+
+
+
+### "Blind" forecast
+
+When we don't know which model to choose
+
+```{r blind}
+
+# forecast for the next 8 weeks 
+blindf <- forecast(ts, h=8)
+
+autoplot(blindf) + xlab("Time") + ylab(paste0("Sales for store ", i))
+
+```
+
+
+
+
+
+
+### Time series regression models
+
+We forecast the time series of interest (y = total_store_sales) assuming that it has a linear relationship with other time series (for example, x = CPI).
+ 
+
+```{r tsreg}
+
+#Linear regression model
+tslm <- tslm(formula = ts(store_tot$total_store_sales) ~ ts(store_tot$CPI) , data = store_tot)
+summary(tslm)
+
+#Multiple linear model (Least squares estimation model)
+
+tsls <- tslm(
+  ts(store_tot$total_store_sales) ~ Temperature + Fuel_Price + MarkDown1 + MarkDown2 + MarkDown3 
+                                    + MarkDown4 + MarkDown5 + CPI + Unemployment,
+  data=store_tot)
+summary(tsls)
+
+
+```
+
+
+
+#### Fitted values
+
+Predictions of y can be obtained by using the estimated coefficients in the regression equation and setting the error term to zero.
+
+```{r fitted}
+
+
+# Linear model
+autoplot(ts(store_tot$total_store_sales), series="Data") +
+  autolayer(fitted(tslm), series="Fitted") +
+  xlab("Time") + ylab("Sales") +
+  ggtitle("Fitted versus real values for sales (linear model)") +
+  guides(colour=guide_legend(title=" "))
+
+# Multiple linear model 
+autoplot(ts(store_tot$total_store_sales), series="Data") +
+  autolayer(fitted(tsls), series="Fitted") +
+  xlab("Time") + ylab("Sales") +
+  ggtitle("Fitted versus real values for sales (multiple linear model)") +
+  guides(colour=guide_legend(title=" "))
+
+```
+
+
+
+
+
+
+
+
+
+
+#### Evaluate the regression models
+
+The models are quite bad, so we move forward :) 
+
+
+
+
+
+
+
+
+
+
+
+
+#### Some useful preditors
+
+Trend and dummy variables (like the variable "IsHoliday")
+
+```{r usefullpred}
+
+fit.trend <- tslm(ts ~ trend + season)
+#summary(fit.trend)
+
+autoplot(ts, series="Data") +
+  autolayer(fitted(fit.trend), series="Fitted") +
+  xlab("Year") + ylab("Sales") +
+  ggtitle("Fitted versus real values for sales (trend+season model)")
+
+```
+
+The model fits quite well the data, so is worth considering it for forecasting.
+
+
+#### Forecast with regression 
+
+```{r forecastreg}
+
+ts.trend <- tslm(ts ~ trend + season)
+fcast <- forecast(ts.trend, h = 8)
+autoplot(fcast) +
+  ggtitle("Forecasts of sales using regression (trend+season model)") +
+  xlab("Year") + ylab("Sales")
+
+```
+
+
+
+### Exponential smoothing
+
+```{r expsmooth}
+
+# Estimate parameters
+fc <- ses(ts)
+# Accuracy of one-step-ahead training errors
+round(accuracy(fc),2)
+
+autoplot(fc) +
+  autolayer(fitted(fc), series="Fitted") +
+  ylab("Sales") + xlab("Time")
+
+```
+
+
+
+
+### ARIMA models
+
+#### Select an ARIMA model automatically
+
+```{r arimaauto}
+#select a model automatically
+
+fit.auto <- auto.arima(ts, seasonal = TRUE)
+
+fit.auto %>% 
+  forecast(h = 8) %>% 
+  autoplot(include=80) +
+  ylab("Sales") + xlab("Time")
+
+#Oops : we got an error, so we must investigate further the time series data and the model !
+
+#fit a model on the data without the seasonal part 
+fit.auto <- auto.arima(ts.min.sea, seasonal = FALSE)
+
+fit.auto %>% 
+  forecast(h = 8) %>% 
+  autoplot(include=80) +
+  ylab("Adjusted Sales") + xlab("Time")
+
+```
+
+
+
+#### Choose best parameters
+
+Examine the ACF and PACF plots and choose the best parameters for the model (the one with the smallest AIC). As expected, the AIC from the auto.arima without approximation is the smallest. 
+
+```{r fitacf}
+
+# Examine the ACF and PACF plots and try some values for 'order' parameter 
+fit.acf <- Arima(ts.min.sea, order=c(0,0,1)) 
+# print the AIC
+fit.acf$aic
+
+# AIC from auto.arima
+fit.auto$aic
+
+fit.auto.2 <- auto.arima(ts.min.sea, seasonal = TRUE, stepwise = FALSE, approximation = FALSE)
+#AIC from auto.arima extended
+fit.auto.2$aic
+
+```
+
+
+
+
+### Best approach for weekly data
+
+#### STL decomposition + a non-seasonal method
+
+Weekly data is difficult to work with because the seasonal period (the number of weeks in a year) is both large and non-integer. The average number of weeks in a year is 52.18. Most of the methods in the litterature require the seasonal period to be an integer. Even if we approximate it by 52, most of the methods will not handle such a large seasonal period efficiently.
+
+The simplest approach is to use an STL decomposition along with a non-seasonal method applied to the seasonally adjusted data. 
+
+```{r bestarima}
+
+i=1
+store <- filter(alldata, alldata$Store == i)
+store_sales <- store %>%
+               group_by(Date) %>%
+               summarise(total_store_sales = sum(Weekly_Sales, na.rm = TRUE)) %>%
+               arrange(Date)
+
+ts <- ts(store_sales[,c("total_store_sales")], frequency = 52)
+decomposed.ts <- decompose(ts, type = "additive")
+
+# Seasonally Adjusted Series = Original Time series - Seasonal part from decomposition
+ts.min.sea <- ts - decomposed.ts$seasonal
+
+ts.min.sea %>% 
+  stlf() %>%
+  autoplot() + 
+  xlab("Time") + 
+  ylab(paste0("Adjusted Sales for store ", i))
+
+
+```
+
+
+
+#### Dynamic harmonic regression model
+
+An alternative approach is to use a dynamic harmonic regression model. 
+In the following example, the number of Fourier terms is selected by minimising the AICc. The order of the ARIMA model is also selected by minimising the AICc, although that is done within the auto.arima() function.
+
+
+```{r fourier}
+
+bestfit <- list(aicc=Inf)
+
+for(K in seq(25)) {
+  fit <- auto.arima(ts.min.sea, 
+                    xreg=fourier(ts.min.sea, K=K), 
+                    seasonal=FALSE)
+  if(fit[["aicc"]] < bestfit[["aicc"]]) {
+    bestfit <- fit
+    bestK <- K
+  }
+}
+
+#print(paste0("bestK parameter is ", bestK))
+
+
+#forecast
+fc <- forecast(bestfit,
+               xreg=fourier(ts.min.sea, K=bestK, h=104))
+autoplot(fc) +
+  xlab("Time") + 
+  ylab(paste0("Adjusted Sales for store ", i))
+
+```
+
+
+
+
+
+
+#### TBATS
+
+A third approach is the TBATS model. 
+
+
+```{r tbats}
+ftbats <- tbats(ts)
+fctbats <- forecast(ftbats, h=104)
+autoplot(fctbats) +
+  xlab("Time") + 
+  ylab(paste0("Sales for store ", i))
+
+```
+
+The STL approach or TBATS model is preferable when the seasonality changes over time. 
+The dynamic harmonic regression approach is preferable if there are covariates that are useful predictors as these can be added as additional regressors.
+
+
+### Conclusion 
+For the store 1, I would personally choose the STL decomposition along with a non-seasonal method applied to the seasonally adjusted data.
